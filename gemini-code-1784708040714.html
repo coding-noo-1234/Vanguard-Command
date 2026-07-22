@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vanguard Command</title>
+    <style>
+        body { margin: 0; padding: 0; background: #1a1a1a; color: white; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; height: 100vh; overflow: hidden; }
+        #ui-panel { width: 300px; min-width: 300px; background: #2c3e50; padding: 20px; box-sizing: border-box; overflow-y: auto; border-right: 3px solid #34495e; z-index: 10; }
+        #game-container { flex-grow: 1; position: relative; background: #27ae60; overflow: hidden; }
+        canvas { position: absolute; top: 0; left: 0; box-shadow: inset 0 0 50px rgba(0,0,0,0.5); }
+        h1 { font-size: 20px; margin-top: 0; text-align: center; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+        label { display: block; margin-top: 15px; font-weight: bold; font-size: 14px; }
+        input[type="range"], select { width: 100%; margin-top: 5px; }
+        button { width: 100%; padding: 10px; margin-top: 10px; background: #3498db; border: none; color: white; font-weight: bold; cursor: pointer; border-radius: 4px; transition: 0.2s; }
+        button:hover { background: #2980b9; }
+        .order-btn { background: #e67e22; margin-top: 5px; }
+        .order-btn:hover { background: #d35400; }
+        .defense-btn { background: #2c3e50; border: 2px solid #f1c40f; margin-top: 5px; }
+        .defense-btn:hover { background: #34495e; }
+        .diplomacy-btn { background: #9b59b6; margin-top: 5px; }
+        .diplomacy-btn:hover { background: #8e44ad; }
+        .surrender-btn { background: #c0392b; margin-top: 5px; }
+        .surrender-btn:hover { background: #a93226; }
+        #log { margin-top: 20px; font-size: 12px; color: #bdc3c7; height: 110px; overflow-y: auto; background: #1a1a1a; padding: 10px; border-radius: 4px; }
+        .stat-box { display: flex; justify-content: space-between; margin-top: 5px; font-size: 13px; background: #1f2c39; padding: 5px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+<div id="ui-panel">
+    <h1>Vanguard Command</h1>
+    
+    <div class="stat-box"><span>Your Castle HP:</span><span id="playerHPDisplay" style="color:#3498db; font-weight:bold;">100</span></div>
+    <div class="stat-box"><span>Enemy Castle HP:</span><span id="enemyHPDisplay" style="color:#e74c3c; font-weight:bold;">100</span></div>
+
+    <label>Troop Count: <span id="troopCountDisplay">1000</span></label>
+    <input type="range" id="troopCount" min="100" max="5000" step="100" value="1000" oninput="document.getElementById('troopCountDisplay').innerText = this.value">
+    
+    <label>Starting Formation:</label>
+    <select id="formation">
+        <option value="Line">Line</option>
+        <option value="Block">Block</option>
+        <option value="Crescent">Crescent</option>
+        <option value="Inverted Crescent">Inverted Crescent</option>
+        <option value="Circle">Circle</option>
+    </select>
+    
+    <button onclick="spawnArmies()" style="background: #2ecc71;">Deploy Armies</button>
+    
+    <label style="margin-top:15px; border-top:1px solid #555; padding-top:10px;">Diplomacy:</label>
+    <button class="diplomacy-btn" onclick="demandSurrender()">Demand Surrender</button>
+    <button class="surrender-btn" onclick="playerSurrender()">Surrender</button>
+
+    <label style="margin-top:15px; border-top:1px solid #555; padding-top:10px;">Tactical Orders:</label>
+    <div id="orders">
+        <button class="order-btn" onclick="giveOrder('Attack')">Attack</button>
+        <button class="order-btn" onclick="giveOrder('Retreat')">Retreat to Base</button>
+        <button class="order-btn" onclick="giveOrder('Surround')">Surround</button>
+        <button class="order-btn" onclick="giveOrder('Hold Line')">Hold Line</button>
+        <button class="order-btn defense-btn" onclick="giveOrder('Full Defense')">🛡️ Full Defense</button>
+    </div>
+
+    <div id="log">Battle Log...</div>
+</div>
+
+<div id="game-container">
+    <canvas id="gameCanvas"></canvas>
+</div>
+
+<script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    const logBox = document.getElementById("log");
+    const container = document.getElementById("game-container");
+
+    let soldiers = [];
+    let playerOrder = "Hold Line";
+    let enemyOrder = "Hold Line";
+    let battleActive = false;
+    
+    let initialEnemyCount = 0;
+    let initialPlayerCount = 0;
+
+    let playerCastleHP = 100;
+    let enemyCastleHP = 100;
+
+    let playerBase = { x: 70, y: 0, radius: 50 };
+    let enemyBase = { x: 0, y: 0, radius: 50 };
+
+    function resizeCanvas() {
+        canvas.width = container.clientWidth;
+        canvas.height = container.clientHeight;
+        playerBase.y = canvas.height / 2;
+        enemyBase.x = canvas.width - 70;
+        enemyBase.y = canvas.height / 2;
+    }
+    window.addEventListener("resize", resizeCanvas);
+    resizeCanvas();
+
+    function logMessage(msg) {
+        logBox.innerHTML = `<div>> ${msg}</div>` + logBox.innerHTML;
+    }
+
+    class Soldier {
+        constructor(x, y, team, index) {
+            this.x = x;
+            this.y = y;
+            this.team = team; 
+            this.index = index;
+            this.speed = Math.random() * 0.6 + 0.6;
+            this.alive = true;
+            // Precalculate defensive circular positions around the castle
+            this.defendAngle = (index * 0.17) % (Math.PI * 2);
+            this.defendRadius = 25 + (index % 3) * 8;
+        }
+
+        update(enemyArmyCenter, myArmyCenter) {
+            if (!this.alive || !battleActive) return;
+            
+            let order = this.team === "player" ? playerOrder : enemyOrder;
+            let targetX = this.x;
+            let targetY = this.y;
+            let homeBase = this.team === "player" ? playerBase : enemyBase;
+
+            if (order === "Attack") {
+                targetX = enemyArmyCenter.x;
+                targetY = enemyArmyCenter.y;
+            } else if (order === "Retreat") {
+                targetX = homeBase.x + (Math.random() * 80 - 40);
+                targetY = homeBase.y + (Math.random() * 80 - 40);
+            } else if (order === "Full Defense") {
+                // Form a tight defensive screen directly around the castle walls
+                targetX = homeBase.x + Math.cos(this.defendAngle) * this.defendRadius;
+                targetY = homeBase.y + Math.sin(this.defendAngle) * this.defendRadius;
+            } else if (order === "Surround") {
+                targetX = enemyArmyCenter.x;
+                targetY = this.y < canvas.height/2 ? enemyArmyCenter.y - 140 : enemyArmyCenter.y + 140;
+            } else if (order === "Hold Line") {
+                targetX = this.x; 
+            }
+
+            let dx = targetX - this.x;
+            let dy = targetY - this.y;
+            let dist = Math.sqrt(dx*dx + dy*dy);
+            
+            if (dist > 3) {
+                this.x += (dx / dist) * this.speed;
+                this.y += (dy / dist) * this.speed;
+            }
+
+            this.x = Math.max(0, Math.min(canvas.width, this.x));
+            this.y = Math.max(0, Math.min(canvas.height, this.y));
+        }
+
+        draw() {
+            if (!this.alive) return;
+            ctx.fillStyle = this.team === "player" ? "#3498db" : "#e74c3c";
+            ctx.fillRect(this.x, this.y, 2, 2);
+        }
+    }
+
+    function spawnArmies() {
+        let count = parseInt(document.getElementById("troopCount").value);
+        let formation = document.getElementById("formation").value;
+        
+        soldiers = [];
+        playerOrder = "Hold Line";
+        enemyOrder = "Hold Line";
+        playerCastleHP = 100;
+        enemyCastleHP = 100;
+        battleActive = true;
+        initialPlayerCount = count;
+        initialEnemyCount = count;
+
+        document.getElementById("playerHPDisplay").innerText = 100;
+        document.getElementById("enemyHPDisplay").innerText = 100;
+
+        logMessage(`Garrisons deployed! 3 ways to win/lose active.`);
+        
+        generateFormation("player", count, formation, playerBase.x + 120, canvas.width/2 - 200);
+        let enemyFormations = ["Line", "Block", "Crescent", "Inverted Crescent", "Circle"];
+        let enemyForm = enemyFormations[Math.floor(Math.random() * enemyFormations.length)];
+        generateFormation("enemy", count, enemyForm, enemyBase.x - 120, canvas.width/2 + 200);
+    }
+
+    function generateFormation(team, count, type, centerX, centerCircleX) {
+        for (let i = 0; i < count; i++) {
+            let x, y;
+            if (type === "Line") {
+                x = centerX + (Math.random() * 20 - 10);
+                y = 50 + (i / count) * (canvas.height - 100);
+            } else if (type === "Block") {
+                let cols = Math.sqrt(count);
+                x = centerX - 50 + (i % cols) * (100 / cols);
+                y = canvas.height/2 - 150 + Math.floor(i / cols) * (300 / cols);
+            } else if (type === "Circle") {
+                let angle = (i / count) * Math.PI * 2;
+                let radius = 80 * Math.random();
+                x = centerCircleX + Math.cos(angle) * radius;
+                y = canvas.height/2 + Math.sin(angle) * radius;
+            } else if (type === "Crescent" || type === "Inverted Crescent") {
+                let p = i / count;
+                let curve = Math.sin(p * Math.PI) * 100;
+                let isInv = type === "Inverted Crescent";
+                x = team === "player" ? 
+                    (isInv ? centerX + curve : centerX - curve) : 
+                    (isInv ? centerX - curve : centerX + curve);
+                y = 50 + p * (canvas.height - 100);
+            }
+            soldiers.push(new Soldier(x, y, team, i));
+        }
+    }
+
+    function giveOrder(order) {
+        if (!battleActive || soldiers.length === 0) return;
+        playerOrder = order;
+        logMessage(`Player orders: <b>${order}</b>!`);
+        
+        setTimeout(() => {
+            if (!battleActive) return;
+            // Strategic AI decision matrix
+            let currentEnemyCount = soldiers.filter(s => s.team === "enemy" && s.alive).length;
+            let aiLossRatio = (initialEnemyCount - currentEnemyCount) / initialEnemyCount;
+
+            if (aiLossRatio > 0.5) {
+                enemyOrder = "Full Defense"; // AI falls back to protect its own castle if losing badly
+            } else if (playerOrder === "Attack" || playerOrder === "Surround") {
+                enemyOrder = Math.random() > 0.5 ? "Hold Line" : "Attack";
+            } else {
+                enemyOrder = "Attack";
+            }
+            logMessage(`Enemy counters with: <span style="color:#e74c3c"><b>${enemyOrder}</b></span>!`);
+        }, 1000);
+    }
+
+    function demandSurrender() {
+        if (!battleActive) return;
+        let currentEnemyCount = soldiers.filter(s => s.team === "enemy" && s.alive).length;
+        let lossRatio = (initialEnemyCount - currentEnemyCount) / initialEnemyCount;
+
+        logMessage("<b>You demand their surrender!</b>");
+
+        if (lossRatio > 0.3 && Math.random() < (lossRatio * 1.5)) {
+            logMessage("<span style='color:#f1c40f'>The enemy breaks ranks and surrenders. VICTORY!</span>");
+            enemyOrder = "Retreat";
+            battleActive = false;
+        } else {
+            logMessage("<span style='color:#e74c3c'>The enemy executes your messenger! They charge!</span>");
+            enemyOrder = "Attack";
+        }
+    }
+
+    function playerSurrender() {
+        if (!battleActive) return;
+        logMessage("<span style='color:#c0392b'>You laid down your arms. DEFEAT.</span>");
+        playerOrder = "Retreat";
+        battleActive = false;
+    }
+
+    function getCenter(team) {
+        let x = 0, y = 0, count = 0;
+        for (let s of soldiers) {
+            if (s.team === team && s.alive) {
+                x += s.x; y += s.y; count++;
+            }
+        }
+        if (count === 0) return { x: canvas.width/2, y: canvas.height/2 };
+        return { x: x/count, y: y/count };
+    }
+
+    // SPATIAL GRID COMBAT (LAG FIX)
+    function resolveCombatAndObjectives() {
+        if (!battleActive) return;
+        
+        let cellSize = 20;
+        let grid = new Map();
+        let activePlayerUnits = 0;
+        let activeEnemyUnits = 0;
+
+        // Sort units into localized mathematical screen grids
+        for (let s of soldiers) {
+            if (!s.alive) continue;
+            
+            if (s.team === "player") activePlayerUnits++;
+            else activeEnemyUnits++;
+
+            // Siege/Castle damage rules
+            if (s.team === "enemy") {
+                let dx = s.x - playerBase.x; let dy = s.y - playerBase.y;
+                if (dx*dx + dy*dy < playerBase.radius * playerBase.radius) {
+                    playerCastleHP -= 0.005; // Tiny damage per frame per unit
+                }
+            } else {
+                let dx = s.x - enemyBase.x; let dy = s.y - enemyBase.y;
+                if (dx*dx + dy*dy < enemyBase.radius * enemyBase.radius) {
+                    enemyCastleHP -= 0.005;
+                }
+            }
+
+            let cellX = Math.floor(s.x / cellSize);
+            let cellY = Math.floor(s.y / cellSize);
+            let key = `${cellX},${cellY}`;
+            if (!grid.has(key)) grid.set(key, []);
+            grid.get(key).push(s);
+        }
+
+        // 1. Check Casualties Loss Conditions
+        if (activePlayerUnits === 0) {
+            battleActive = false;
+            logMessage("<span style='color:#c0392b'>Your entire army was wiped out! DEFEAT.</span>");
+            return;
+        }
+        if (activeEnemyUnits === 0) {
+            battleActive = false;
+            logMessage("<span style='color:#2ecc71'>You eliminated the entire enemy army! VICTORY!</span>");
+            return;
+        }
+
+        // 2. Check Castle Destruction Loss Conditions
+        if (playerCastleHP <= 0) {
+            playerCastleHP = 0; battleActive = false;
+            logMessage("<span style='color:#c0392b'>Your Castle has been captured and burned! DEFEAT.</span>");
+        }
+        if (enemyCastleHP <= 0) {
+            enemyCastleHP = 0; battleActive = false;
+            logMessage("<span style='color:#2ecc71'>The Enemy Castle has fallen! VICTORY!</span>");
+        }
+
+        document.getElementById("playerHPDisplay").innerText = Math.max(0, Math.ceil(playerCastleHP));
+        document.getElementById("enemyHPDisplay").innerText = Math.max(0, Math.ceil(enemyCastleHP));
+
+        // 3. Process localized grid combat collisions
+        let threshold = 5;
+        for (let [key, cellSoldiers] of grid.entries()) {
+            if (cellSoldiers.length < 2) continue;
+            for (let i = 0; i < cellSoldiers.length; i++) {
+                let s1 = cellSoldiers[i];
+                if (!s1.alive) continue;
+                for (let j = i + 1; j < cellSoldiers.length; j++) {
+                    let s2 = cellSoldiers[j];
+                    if (!s2.alive || s1.team === s2.team) continue;
+                    
+                    let dx = s1.x - s2.x;
+                    let dy = s1.y - s2.y;
+                    if (Math.abs(dx) < threshold && Math.abs(dy) < threshold) {
+                        if (Math.random() > 0.5) s1.alive = false;
+                        else s2.alive = false;
+                    }
+                }
+            }
+        }
+    }
+
+    function drawCastle(x, y, team) {
+        ctx.fillStyle = team === "player" ? "#2980b9" : "#c0392b";
+        ctx.fillRect(x - 15, y - 5, 30, 25); // Main Keep
+        ctx.fillRect(x - 22, y - 15, 8, 35); // Left Tower
+        ctx.fillRect(x + 14, y - 15, 8, 35); // Right Tower
+        
+        ctx.fillStyle = "#1a1a1a";
+        ctx.fillRect(x - 4, y + 10, 8, 10); // Castle Gate
+        
+        ctx.fillStyle = team === "player" ? "#3498db" : "#e74c3c";
+        ctx.fillRect(x - 22, y - 20, 8, 5);  // Left Battlement
+        ctx.fillRect(x + 14, y - 20, 8, 5);  // Right Battlement
+    }
+
+    function gameLoop() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Render control circles around homes
+        ctx.strokeStyle = "rgba(255,255,255,0.15)";
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(playerBase.x, playerBase.y, playerBase.radius, 0, Math.PI*2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(enemyBase.x, enemyBase.y, enemyBase.radius, 0, Math.PI*2); ctx.stroke();
+
+        drawCastle(playerBase.x, playerBase.y, "player");
+        drawCastle(enemyBase.x, enemyBase.y, "enemy");
+        
+        let playerCenter = getCenter("player");
+        let enemyCenter = getCenter("enemy");
+
+        for (let s of soldiers) {
+            let targetCenter = s.team === "player" ? enemyCenter : playerCenter;
+            let myCenter = s.team === "player" ? playerCenter : enemyCenter;
+            s.update(targetCenter, myCenter);
+            s.draw();
+        }
+
+        resolveCombatAndObjectives();
+        requestAnimationFrame(gameLoop);
+    }
+
+    gameLoop();
+</script>
+
+</body>
+</html>
